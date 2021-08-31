@@ -1,0 +1,82 @@
+---
+title: "Klastrowanie"
+author: "Radek Piekarz"
+date: "8 04 2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(janitor)
+library(dplyr)
+library(caret)
+library(MASS)
+library(tidyverse) 
+library(cluster)
+library(factoextra)
+library(dendextend)
+library(gridExtra)
+library(scorecard)
+library(class)
+library(fpc)
+```
+
+
+
+```{r}
+
+set.seed(1)
+cm <- data.frame("wnip_at" = runif(100, 0, 0.05),
+                 "atrwale_atotal" = rnorm(100, 0.1, 0.004),
+                 "kap_pas" = runif(100, 0.01, 0.4),
+                 "ebit_rev" = runif(100, 0.001, 0.4),
+                 "roa" = runif(100, 0.002, 0.14),
+                 "zob_dlugo_zob_total" = runif(100, 0.01, 0.12))
+
+ff <- data.frame("wnip_at" = runif(130, 0.15, 0.7),
+                 "atrwale_atotal" = runif(130, 0.2, 0.9),
+                 "kap_pas" = runif(130, 0.01, 0.9),
+                 "ebit_rev" = runif(130, -0.05, 0.41),
+                 "roa" = runif(130, -0.012, 0.43),
+                 "zob_dlugo_zob_total" = runif(130, 0.1, 0.39))
+
+full <- rbind(cm, ff)
+rownames(full) <- randomNames(230, gender = 1, ethnicity = 5, which.names = "last", sample.with.replacement = F)
+
+write.csv(full, "full.csv")
+
+```
+
+# Klastrowanie
+```{r}
+d <- dist(full[,1:6], method = "euclidean")
+par(mfrow=c(2,1))
+p1 <-fviz_nbclust(full[,1:6], FUN = hcut, method = "wss")
+p2 <-fviz_nbclust(full[,1:6], FUN = hcut, method = "silhouette")
+
+
+gridExtra::grid.arrange(p1,p2)
+
+hc1 <- hclust(d, method = "complete" )
+
+sub_grp <- cutree(hc1, k = 2)
+table(sub_grp)
+
+Simpson <- full %>%
+  mutate(cluster = sub_grp) %>% rownames_to_column %>% filter(rowname == "Simpson")
+
+
+c1 <- fviz_dend(hc1, k=2, cex=0.5, k_colors=c("#00AFBB","#E7B800","#FC4E07"),
+          color_labels_by_k=TRUE, ggtheme=theme_minimal(), main = "Drzewo klasyfikacyjne")
+
+c2 <- fviz_cluster(list(data = full[1:6], cluster = sub_grp), main = "Klasyfikacja spolek")
+gridExtra::grid.arrange(c1,c2)
+
+
+```
+
+
+
+ 
+ 

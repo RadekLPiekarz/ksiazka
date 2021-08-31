@@ -1,0 +1,223 @@
+---
+title: "kalsyfikacja"
+author: "Radek Piekarz"
+date: "8 04 2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Biblioteki
+Ladowanie bibliotek niezbdnych dla badania.
+
+```{r}
+library(caret)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(verification)
+library(tibble)
+library(readr)
+library(purrr)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(purrr)
+library(corrplot)
+library(tibble)
+library(mlbench)
+```
+
+# Ladowanie bazy danych
+
+```{r}
+set.seed(987654321)
+audit_data <- read_csv("audit_data.csv", col_types = cols(LOCATION_ID = col_number()))
+
+str(audit_data)
+
+full_logit <- audit_data[, c(1, 2, 3, 6, 10, 13, 16, 27)]
+
+full_logit$Risk <- as.factor(full_logit$Risk)
+full_logit$Risk <- plyr::revalue(full_logit$Risk,  c("0" = "nonrisk", "1" = "risk"))
+levels(full_logit$Risk)
+summary(full_logit)
+full_logit <- full_logit %>% drop_na()
+colnames(full_logit)
+
+```
+
+#Podzial na probe uczca i testowa
+
+Dzielimy zb?r na treningowy i testowy.
+```{r}
+full_split <- createDataPartition(full_logit$Risk, p = 0.7, list = FALSE) 
+full_train <- full_logit[full_split,]
+full_test <- full_logit[-full_split,]
+
+summary(full_train$Risk)
+summary(full_test$Risk)
+
+```
+
+# Przeglad zmiennych
+
+Tu dokonamy przegladu rodzajow zmiennych - ilosciowych i jakosciowych. Zobaczy my poziomy tych zmiennych.
+```{r}
+zmienne_ilosciowe <- 
+  map_lgl(full_train, is.numeric) %>% 
+  which() %>% names()
+
+map_int(full_train[, zmienne_ilosciowe], 
+        function(x) 
+          unique(x) %>% 
+          length())
+
+zmienne_jakosciowe <- 
+  map_lgl(full_train, is.factor) %>% 
+  which() %>% names()
+
+map_int(full_train[, zmienne_jakosciowe], 
+        function(x) 
+          unique(x) %>% 
+          length())
+```
+
+# Korelacje oraz wariancje zmiennych
+Dokonamy analizy korelacji ze zmienna celu dla zmiennych ilosciowych. W ten sposob zidentyfikujemy potencjalne wspoliniowosci w modelu.
+```{r}
+korelacje_ilosciowe <- cor(full_train[,zmienne_ilosciowe],
+                                use = "pairwise.complete.obs") 
+
+corrplot.mixed(korelacje_ilosciowe,
+               upper = "square",
+               lower = "number",
+               tl.col="black", # kolor etykietek (nazw zmiennych)
+               tl.pos = "lt")  # pozycja etykietek (lt = left and top)
+
+
+findCorrelation(korelacje_ilosciowe,
+                cutoff = 0.9,
+                names = TRUE)
+
+nearZeroVar(full_train,
+            saveMetrics = TRUE) -> near_zv
+write.csv(near_zv, "logitnzv.csv")
+
+```
+
+# Modele
+
+Tworzymy modele logit i probit, w tym z automatycznym doborem zmiennych.
+```{r}
+options(contrasts = rep("contr.treatment", 2))
+levels(full_train$Risk)
+
+risk_logit1 <- glm(Risk ~ .,
+                    family = binomial(link = "logit"),
+                    data = full_train)
+
+risk_probit1 <- glm(Risk ~ .,
+                    family = binomial(link = "probit"),
+                    data = full_train)
+
+
+
+risk_l.backward <- MASS::stepAIC(risk_logit1, direction = 'backward')
+risk_p.backward <- MASS::stepAIC(risk_probit1, direction = 'backward')
+
+```
+
+# Diagnostyki
+Badamy jakosc dopasowania modelu.
+```{r}
+summary(risk_l.backward)
+summary(risk_logit1)
+
+fitted_values <-  data.frame("logit" = predict(risk_logit1,type = "response"), 
+                             "probit" = predict(risk_probit1, type = "response"),
+                             "logit_back" = predict(risk_l.backward,type = "response"),
+                             "probit_back" = predict(risk_p.backward,type = "response"))
+
+fitted_values_prognozy <-  data.frame("logit" = predict(risk_logit1,type = "response", newdata = full_test), 
+                             "probit" = predict(risk_probit1, type = "response", newdata = full_test),
+                             "logit_back" = predict(risk_l.backward,type = "response", newdata = full_test),
+                             "probit_back" = predict(risk_p.backward,type = "response", newdata = full_test))
+
+head(fitted_values)
+summary(fitted_values)
+
+tabela <- confusionMatrix(data = as.factor(ifelse(fitted_values$logit > 0.5, "risk", "nonrisk")),
+                            reference = full_train$Risk, 
+                            positive = "nonrisk") 
+
+podsumowanie_binarna <- function(prognozowane_p,
+                                 rzeczywista,
+                                 punkt_odciecia = 0.5) {
+  tabela <- confusionMatrix(as.factor(ifelse(prognozowane_p > punkt_odciecia, 
+                                             "risk", 
+                                             "nonrisk")), 
+                            rzeczywista, 
+                            "nonrisk") 
+  stats <- round(c(tabela$overall, 
+                   tabela$byClass), 5)
+  return(stats)
+}
+
+
+measures_train <- 
+    sapply(fitted_values,
+           podsumowanie_binarna, 
+           rzeczywista = full_train$Risk)
+
+measures_train
+class(measures_train)
+
+measures_train <- 
+  measures_train %>% 
+  data.frame() %>% 
+  rownames_to_column("miara") %>% 
+  dplyr::filter(miara %in% c("Accuracy",
+                             "Sensitivity",
+                             "Specificity",
+                             "Pos Pred Value",
+                             "Neg Pred Value",
+                             "Balanced Accuracy",
+                             "F1"))
+
+measures_train_long <- 
+  measures_train %>% 
+  gather(key = "model", 
+         value = "wartosc",
+         -miara) 
+
+head(measures_train_long)
+
+ggplot(measures_train_long) +
+    geom_point(aes(x = model, 
+                 y = wartosc, 
+                 group = miara, 
+                 color = miara),
+             size = 3) +
+  geom_line(aes(x = model, 
+                y = wartosc, 
+                group = miara, 
+                color = miara),
+            size = 1) +
+  theme_light() +
+  theme(legend.position = "bottom")
+
+
+roc.plot((full_train$Risk == "risk")*1,
+         fitted_values$logit)
+
+sapply(fitted_values_prognozy,
+       function(x) roc.area((full_test$Risk == "risk")*1,
+                            x)$A)
+```
+
+
+
+
+
+
